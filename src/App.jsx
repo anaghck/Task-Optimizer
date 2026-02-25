@@ -441,7 +441,7 @@ function App() {
     // Add Notification for all assignees
     const newNotif = {
       id: Date.now() + Math.random(),
-      title: 'New Mission Assigned',
+      title: 'New Task Assigned',
       message: `You have been assigned to: "${task.title}"`,
       type: 'info',
       timestamp: new Date().toISOString(),
@@ -850,7 +850,7 @@ function App() {
                 </div>
                 <div className="stat-details">
                   <span className="stat-value">{tasks.length}</span>
-                  <span className="stat-label">Total Missions</span>
+                  <span className="stat-label">Total Tasks</span>
                 </div>
               </div>
               <div className="stat-card-premium glass-panel">
@@ -925,7 +925,7 @@ function App() {
               {filteredTasks.length === 0 ? (
                 <div className="empty-state glass-panel">
                   <Brain size={48} color="var(--text-muted)" />
-                  <h3>No Active Missions</h3>
+                  <h3>No Active Tasks</h3>
                   <p>All clear! Or try adjusting your filters.</p>
                 </div>
               ) : (
@@ -1094,7 +1094,7 @@ function App() {
                     <label>Detailed Briefing</label>
                     <textarea
                       rows="3"
-                      placeholder="Specify mission parameters..."
+                      placeholder="Specify task parameters..."
                       value={newTask.description}
                       onChange={(e) => setNewTask({ ...newTask, description: e.target.value })}
                     />
