@@ -225,6 +225,15 @@ function App() {
     // Check Manager
     if (loginData.username === MANAGER_CREDS.username && loginData.password === MANAGER_CREDS.password) {
       setCurrentUser(MANAGER_CREDS);
+      // Show welcome notification
+      const welcomeNotif = {
+        id: Date.now() + Math.random(),
+        title: `Welcome, Commander`,
+        message: 'Master control center active.',
+        type: 'info',
+        timestamp: new Date().toISOString()
+      };
+      setNotifications(prev => [welcomeNotif, ...prev]);
       return;
     }
 
@@ -233,6 +242,15 @@ function App() {
 
     if (staff) {
       setCurrentUser(staff);
+      // Show welcome notification
+      const welcomeNotif = {
+        id: Date.now() + Math.random(),
+        title: `Welcome, ${staff.name}`,
+        message: 'Strategic operations dashboard initialized.',
+        type: 'info',
+        timestamp: new Date().toISOString()
+      };
+      setNotifications(prev => [welcomeNotif, ...prev]);
     } else {
       setLoginError('Invalid username or password. (Hint: admin/123 or adam/111)');
     }
@@ -542,50 +560,81 @@ function App() {
   if (!currentUser) {
     return (
       <div className="login-overlay">
+        <div className="login-bg-elements">
+          <div className="login-blob blob-1"></div>
+          <div className="login-blob blob-2"></div>
+          <div className="login-blob blob-3"></div>
+        </div>
+
         <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
+          initial={{ opacity: 0, y: 30, scale: 0.95 }}
+          animate={{ opacity: 1, y: 0, scale: 1 }}
+          transition={{ duration: 0.6, ease: "easeOut" }}
           className="login-card glass-panel"
         >
-          <div style={{ display: 'flex', justifyContent: 'center', marginBottom: '16px' }}>
-            <div className="avatar" style={{ width: '64px', height: '64px', fontSize: '1.5rem', border: '2px solid var(--primary)' }}>
-              <Brain size={32} />
+          <div style={{ display: 'flex', justifyContent: 'center', marginBottom: '24px' }}>
+            <div className="avatar-glow">
+              <div className="avatar" style={{ width: '80px', height: '80px', fontSize: '2rem', border: '2px solid var(--primary)', background: 'rgba(255,255,255,0.05)' }}>
+                <Brain size={40} className="glow-icon" />
+              </div>
             </div>
           </div>
-          <h1 className="text-gradient" style={{ fontSize: '2rem', marginBottom: '8px' }}>AIsync Enterprise</h1>
-          <p style={{ color: 'var(--text-muted)', marginBottom: '32px' }}>Personalized Task Force Login</p>
 
-          <form onSubmit={handleLogin} style={{ display: 'flex', flexDirection: 'column', gap: '16px', textAlign: 'left' }}>
+          <h1 className="text-gradient" style={{ fontSize: '2.5rem', marginBottom: '8px', letterSpacing: '-0.02em' }}>TaskPilot</h1>
+          <p style={{ color: 'var(--text-muted)', marginBottom: '40px', fontSize: '0.95rem' }}>Strategic Operations Login</p>
+
+          <form onSubmit={handleLogin} style={{ display: 'flex', flexDirection: 'column', textAlign: 'left' }}>
             <div className="form-group">
-              <label>Username</label>
-              <input
-                type="text"
-                placeholder="Enter username..."
-                required
-                value={loginData.username}
-                onChange={e => setLoginData({ ...loginData, username: e.target.value })}
-              />
+              <label style={{ fontSize: '0.75rem', textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--primary)' }}>Identifier</label>
+              <div className="input-with-icon">
+                <Users size={18} className="field-icon" style={{ opacity: 0.5 }} />
+                <input
+                  type="text"
+                  placeholder="Username"
+                  required
+                  value={loginData.username}
+                  onChange={e => setLoginData({ ...loginData, username: e.target.value })}
+                  style={{ paddingLeft: '48px' }}
+                />
+              </div>
             </div>
             <div className="form-group">
-              <label>Password</label>
-              <input
-                type="password"
-                placeholder="••••••••"
-                required
-                value={loginData.password}
-                onChange={e => setLoginData({ ...loginData, password: e.target.value })}
-              />
+              <label style={{ fontSize: '0.75rem', textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--primary)' }}>Access Key</label>
+              <div className="input-with-icon">
+                <ShieldCheck size={18} className="field-icon" style={{ opacity: 0.5 }} />
+                <input
+                  type="password"
+                  placeholder="••••••••"
+                  required
+                  value={loginData.password}
+                  onChange={e => setLoginData({ ...loginData, password: e.target.value })}
+                  style={{ paddingLeft: '48px' }}
+                />
+              </div>
             </div>
-            {loginError && <p style={{ color: 'var(--danger)', fontSize: '0.8rem' }}>{loginError}</p>}
-            <button type="submit" className="btn-primary" style={{ width: '100%', justifyContent: 'center', marginTop: '10px' }}>
-              Sign In <ArrowRight size={18} />
+
+            {loginError && (
+              <motion.div
+                initial={{ opacity: 0, x: -10 }}
+                animate={{ opacity: 1, x: 0 }}
+                style={{ color: '#ef4444', fontSize: '0.85rem', display: 'flex', alignItems: 'center', gap: '8px', background: 'rgba(239, 68, 68, 0.1)', padding: '10px', borderRadius: '8px' }}
+              >
+                <AlertCircle size={14} /> {loginError}
+              </motion.div>
+            )}
+
+            <button type="submit" className="btn-primary" style={{ width: '100%', marginTop: '12px', height: '52px', fontSize: '1.1rem' }}>
+              Authorize Access <ArrowRight size={20} />
             </button>
           </form>
 
-          <div style={{ marginTop: '24px', paddingTop: '24px', borderTop: '1px solid rgba(255, 255, 255, 0.05)', fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-            <p>Demo Credentials:</p>
-            <p>Manager: <b>admin / 123</b></p>
-            <p>Staff: <b>adam / 111</b></p>
+          <div style={{ marginTop: '32px', paddingTop: '24px', borderTop: '1px solid rgba(255, 255, 255, 0.08)', fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+            <p style={{ marginBottom: '8px' }}>Security Protocol: v4.1 Active</p>
+            <div style={{ display: 'flex', justifyContent: 'center', gap: '12px', opacity: 0.7 }}>
+              <span>Manager: admin/123</span>
+              <span>•</span>
+              <span>Staff: adam/111</span>
+            </div>
           </div>
         </motion.div>
       </div>
@@ -601,7 +650,7 @@ function App() {
           <div className="logo-icon">
             <Network size={24} color="#fff" />
           </div>
-          <h2>AXON AI</h2>
+          <h2>TASKPILOT</h2>
         </div>
 
         <nav>
