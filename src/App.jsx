@@ -105,6 +105,12 @@ function App() {
   const [isStaffModalOpen, setIsStaffModalOpen] = useState(false);
   const [newStaff, setNewStaff] = useState({ name: '', username: '', password: '', email: '' });
 
+  const [isExtensionModalOpen, setIsExtensionModalOpen] = useState(false);
+  const [extensionTask, setExtensionTask] = useState(null);
+  const [extensionForm, setExtensionForm] = useState({ reason: '', newDeadline: '' });
+
+  const [activeAlarmTask, setActiveAlarmTask] = useState(null);
+
 
 
   useEffect(() => {
@@ -133,82 +139,143 @@ function App() {
   }, [currentUser]);
   const playNotificationSound = () => {
     const audio = new Audio('https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3');
-    audio.play().catch(e => console.error("Sound play failed", e));
+    audio.volume = 0.5;
+    audio.play().catch(e => console.warn("Audio blocked by browser. User interaction needed."));
+  };
+
+  // Dedicated Alarm Sound Management
+  useEffect(() => {
+    let alarmAudio = null;
+    if (activeAlarmTask) {
+      alarmAudio = new Audio('https://assets.mixkit.co/active_storage/sfx/995/995-preview.mp3');
+      alarmAudio.loop = true;
+      alarmAudio.volume = 0.8;
+      alarmAudio.play().catch(e => {
+        console.error("Alarm sound blocked. The user must interact with the page first.", e);
+        // Create a fake notif to prompt interaction if blocked
+        const interactNotif = {
+          id: 'audio-prompt',
+          title: 'AUDIO SIGNAL BLOCKED',
+          message: 'Please click anywhere on the screen to enable critical alarm sounds.',
+          type: 'danger',
+          timestamp: new Date().toISOString()
+        };
+        setNotifications(prev => [interactNotif, ...prev]);
+      });
+    }
+
+    return () => {
+      if (alarmAudio) {
+        alarmAudio.pause();
+        alarmAudio.currentTime = 0;
+        alarmAudio = null;
+      }
+    };
+  }, [activeAlarmTask]);
+
+  const requestNotificationPermission = () => {
+    if (!("Notification" in window)) {
+      alert("This browser does not support desktop notifications.");
+      return;
+    }
+    Notification.requestPermission().then(permission => {
+      if (permission === "granted") {
+        new Notification("TASKPILOT ACTIVATED", {
+          body: "Desktop alerts are now synchronized with your laptop system.",
+          icon: "/vite.svg"
+        });
+      }
+    });
   };
 
   // Background Automated Reminder Logic
   useEffect(() => {
     const interval = setInterval(() => {
       const now = new Date();
-      tasks.forEach(task => {
-        if (!task.completed && (task.deadline || task.reminderTime)) {
-          const deadlineDate = new Date(task.deadline || task.reminderTime);
-          const reminderOffset = task.reminderOffset || 30; // default 30 mins
-          const triggerTime = new Date(deadlineDate.getTime() - (reminderOffset * 60000));
+      let hasUpdates = false;
+      const updatedTasks = tasks.map(task => {
+        if (!task.completed && task.deadline) {
+          const deadlineDate = new Date(task.deadline);
 
-          if (now >= triggerTime && !task.reminderSent) {
-            // 1. Desktop Notification
+          // Stage 1: Initial Reminder (at offset)
+          if (!task.reminderSent) {
+            const reminderOffset = parseInt(task.reminderOffset) || 0;
+            const triggerTime = new Date(deadlineDate.getTime() - (reminderOffset * 60000));
+
+            if (now >= triggerTime) {
+              // Desktop Notification
+              if (Notification.permission === "granted") {
+                new Notification("⏰ UPCOMING DEADLINE", {
+                  body: `Reminder: "${task.title}" is due in ${reminderOffset} min.`,
+                  tag: `remind-${task.id}`,
+                  icon: "/vite.svg"
+                });
+              }
+
+              // In-App & APIs
+              const newNotif = {
+                id: Date.now() + Math.random(),
+                title: 'TASK REMINDER',
+                message: `"${task.title}" is approaching deadline (${reminderOffset} min remaining)`,
+                type: 'warning',
+                timestamp: new Date().toISOString()
+              };
+              setNotifications(prev => [newNotif, ...prev]);
+              playNotificationSound();
+
+              // n8n Automated Reminder
+              if (n8nUrl) triggerWebhook(task, 'automated_reminder');
+
+              if (botApiKey && task.phone) {
+                const assigneeText = Array.isArray(task.assignees) ? task.assignees.map(a => a.name).join(', ') : (task.assignee || 'Staff');
+                const text = `*⏰ REMINDER*\n\n📌 Task: ${task.title}\n📅 Due in: ${reminderOffset} minutes.\n👤 Assignee: ${assigneeText}`;
+                const cleanNumber = task.phone.replace(/\D/g, '');
+                fetch(`https://api.callmebot.com/whatsapp.php?phone=${cleanNumber}&text=${encodeURIComponent(text)}&apikey=${botApiKey}`, { mode: 'no-cors' });
+              }
+
+              hasUpdates = true;
+              return { ...task, reminderSent: true };
+            }
+          }
+
+          // Stage 2: Final Deadline Alarm (at T-0)
+          if (now >= deadlineDate && !task.deadlineAlarmSent) {
+            // High-Impact Desktop Push
             if (Notification.permission === "granted") {
-              new Notification("AI System Alert", {
-                body: `Action Required: ${task.title} is approaching its deadline.`
+              new Notification("🚨 DEADLINE REACHED", {
+                body: `CRITICAL: The deadline for "${task.title}" has been reached!`,
+                tag: `alarm-${task.id}`,
+                requireInteraction: true,
+                icon: "/vite.svg"
               });
             }
 
-
-            // 2. In-App Notification
-            const newNotif = {
+            // High-Impact In-App Alarm
+            const alarmNotif = {
               id: Date.now() + Math.random(),
-              title: 'Task Reminder',
-              message: `Task "${task.title}" is due now!`,
-              type: 'warning',
+              title: 'DEADLINE REACHED',
+              message: `CRITICAL: "${task.title}" is now OVERDUE!`,
+              type: 'danger',
               timestamp: new Date().toISOString()
             };
-            setNotifications(prev => [newNotif, ...prev]);
-            playNotificationSound();
+            setNotifications(prev => [alarmNotif, ...prev]);
+            setActiveAlarmTask(task);
 
+            // Re-trigger APIs for final alarm
+            // n8n Critical Alarm
+            if (n8nUrl) triggerWebhook(task, 'deadline_alarm');
 
-            if (botApiKey && task.phone) {
-              const assigneeText = Array.isArray(task.assignees)
-                ? task.assignees.map(a => a.name).join(', ')
-                : task.assignee;
-              const text = `*AUTOMATIC REMINDER*\n\n📌 Task: ${task.title}\n👤 Assignees: ${assigneeText}\n📅 Deadline: ${task.deadline || 'N/A'}\n🧠 AI Priority: ${Math.round(task.score)}`;
-              const cleanNumber = task.phone.replace(/\D/g, '');
-
-
-              fetch(`https://api.callmebot.com/whatsapp.php?phone=${cleanNumber}&text=${encodeURIComponent(text)}&apikey=${botApiKey}`, {
-                mode: 'no-cors'
-              });
-            }
-
-            // 3. N8N WEBHOOK TRIGGER (CORS-Safe Form Mode)
-            if (n8nUrl) {
-              const formData = new URLSearchParams();
-              formData.append('event', 'task_reminder');
-              formData.append('task_title', task.title);
-              formData.append('task_desc', task.description);
-              formData.append('assignee_name', Array.isArray(task.assignees) ? task.assignees.map(a => a.name).join(', ') : task.assignee);
-              formData.append('assignee_email', Array.isArray(task.assignees) ? task.assignees.map(a => a.email).join(', ') : task.email);
-              formData.append('phone_number', task.phone);
-
-              formData.append('priority_score', Math.round(task.score));
-              formData.append('deadline', task.deadline);
-              formData.append('timestamp', new Date().toISOString());
-
-              fetch(n8nUrl, {
-                method: 'POST',
-                mode: 'no-cors',
-                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-                body: formData.toString()
-              }).catch(err => console.error("n8n Trigger Failed", err));
-            }
-
-            // Mark as sent
-            setTasks(prev => prev.map(t => t.id === task.id ? { ...t, reminderSent: true } : t));
+            hasUpdates = true;
+            return { ...task, deadlineAlarmSent: true };
           }
         }
+        return task;
       });
-    }, 20000); // Check every 20 seconds for better accuracy
 
+      if (hasUpdates) {
+        setTasks(updatedTasks);
+      }
+    }, 5000);
     return () => clearInterval(interval);
   }, [tasks, botApiKey, n8nUrl]);
 
@@ -257,23 +324,23 @@ function App() {
   };
 
 
-  const triggerN8nManual = (task) => {
-    if (!n8nUrl) {
-      alert("Please enter your n8n Webhook URL in the sidebar first.");
-      return;
-    }
+  const triggerWebhook = (task, eventType = 'manual_trigger') => {
+    if (!n8nUrl) return;
 
-    setIsSending(true);
     const formData = new URLSearchParams();
-    formData.append('event', 'manual_trigger');
+    formData.append('event', eventType);
     formData.append('task_title', task.title);
-    formData.append('task_desc', task.description);
-    formData.append('assignee_name', Array.isArray(task.assignees) ? task.assignees.map(a => a.name).join(', ') : task.assignee);
-    formData.append('assignee_email', Array.isArray(task.assignees) ? task.assignees.map(a => a.email).join(', ') : (task.email || ''));
-    formData.append('phone_number', task.phone || '');
+    formData.append('task_desc', task.description || 'No description provided.');
 
-    formData.append('priority_score', Math.round(task.score));
+    const names = Array.isArray(task.assignees) ? task.assignees.map(a => a.name).join(', ') : (task.assignee || 'Assigned Staff');
+    const emails = Array.isArray(task.assignees) ? task.assignees.map(a => a.email).join(', ') : (task.email || '');
+
+    formData.append('assignee_name', names);
+    formData.append('assignee_email', emails);
+    formData.append('phone_number', task.phone || '');
+    formData.append('priority_score', Math.round(task.score || 0));
     formData.append('deadline', task.deadline || '');
+    formData.append('status', task.status || 'Pending');
     formData.append('timestamp', new Date().toISOString());
 
     fetch(n8nUrl, {
@@ -281,15 +348,17 @@ function App() {
       mode: 'no-cors',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: formData.toString()
-    })
-      .then(() => {
-        alert(`✅ Signal sent to n8n for "${task.title}"!`);
-        setIsSending(false);
-      })
-      .catch(err => {
-        alert("Failed to trigger n8n: " + err.message);
-        setIsSending(false);
-      });
+    }).catch(err => console.error("Webhook dispatch failed:", err));
+
+    if (eventType === 'manual_trigger') {
+      alert(`✅ Signal sent to n8n for "${task.title}"!`);
+    }
+  };
+
+  const triggerN8nManual = (task) => {
+    setIsSending(true);
+    triggerWebhook(task, 'manual_trigger');
+    setTimeout(() => setIsSending(false), 500);
   };
 
   const calculateScore = (task) => {
@@ -316,6 +385,24 @@ function App() {
 
     return score;
   };
+
+  const stats = useMemo(() => {
+    const userTasks = tasks.filter(t =>
+      currentUser?.role === 'Manager' ||
+      (Array.isArray(t.assignees) ? t.assignees.some(a => a.email === currentUser?.email) : t.email === currentUser?.email)
+    );
+
+    const activeTasks = userTasks.filter(t => !t.completed);
+    const sortedByDeadline = [...activeTasks].filter(t => t.deadline).sort((a, b) => new Date(a.deadline) - new Date(b.deadline));
+    const nextDeadline = sortedByDeadline.length > 0 ? format(new Date(sortedByDeadline[0].deadline), 'MMM d, HH:mm') : 'None';
+
+    return {
+      total: userTasks.length,
+      active: activeTasks.length,
+      nextDeadline,
+      avgScore: Math.round(userTasks.reduce((acc, t) => acc + (t.score || 0), 0) / (userTasks.length || 1))
+    };
+  }, [tasks, currentUser]);
 
   const sendWhatsApp = (task) => {
     const assigneeNames = Array.isArray(task.assignees) ? task.assignees.map(a => a.name).join(', ') : (task.assignee || 'You');
@@ -394,6 +481,16 @@ function App() {
     let matchesStatus = true;
     if (filter === 'completed') matchesStatus = task.completed;
     if (filter === 'pending') matchesStatus = !task.completed;
+    if (filter === 'overdue') matchesStatus = !task.completed && task.deadline && isPast(new Date(task.deadline));
+    if (filter === 'next_deadline') {
+      const userTasksForNext = prioritizedTasks.filter(t =>
+        currentUser?.role === 'Manager' ||
+        (Array.isArray(t.assignees) ? t.assignees.some(a => a.email === currentUser?.email) : t.email === currentUser?.email)
+      );
+      const activeTasks = userTasksForNext.filter(t => !t.completed && t.deadline);
+      const sortedByDeadline = [...activeTasks].sort((a, b) => new Date(a.deadline) - new Date(b.deadline));
+      matchesStatus = sortedByDeadline.length > 0 && task.id === sortedByDeadline[0].id;
+    }
 
     // Priority Filter
     let matchesPriority = true;
@@ -556,6 +653,53 @@ function App() {
     }
   };
 
+  const submitExtension = (e) => {
+    e.preventDefault();
+    if (!extensionForm.reason || !extensionForm.newDeadline) {
+      alert("Please provide both a reason and a proposed new deadline.");
+      return;
+    }
+    setTasks(tasks.map(t => t.id === extensionTask.id ? {
+      ...t,
+      extensionStatus: 'Pending',
+      delayReason: extensionForm.reason,
+      suggestedDeadline: extensionForm.newDeadline
+    } : t));
+
+    // Notify Manager
+    const newNotif = {
+      id: Date.now() + Math.random(),
+      title: 'Extension Requested',
+      message: `${currentUser.name} requested a deadline extension for "${extensionTask.title}"`,
+      type: 'warning',
+      timestamp: new Date().toISOString(),
+      role: 'Manager'
+    };
+    setNotifications(prev => [newNotif, ...prev]);
+
+    setIsExtensionModalOpen(false);
+    setExtensionForm({ reason: '', newDeadline: '' });
+  };
+
+  const approveExtension = (id) => {
+    setTasks(tasks.map(t => {
+      if (t.id === id) {
+        return {
+          ...t,
+          deadline: t.suggestedDeadline,
+          extensionStatus: 'Approved',
+          reminderSent: false,
+          status: 'In Progress'
+        };
+      }
+      return t;
+    }));
+  };
+
+  const rejectExtension = (id) => {
+    setTasks(tasks.map(t => t.id === id ? { ...t, extensionStatus: 'Rejected' } : t));
+  };
+
 
   if (!currentUser) {
     return (
@@ -664,11 +808,14 @@ function App() {
           <button className={filter === 'completed' ? 'active' : ''} onClick={() => setFilter('completed')}>
             <CheckCircle2 size={20} /> Completed
           </button>
+          <button className={filter === 'overdue' ? 'active' : ''} onClick={() => setFilter('overdue')} style={{ color: filter === 'overdue' ? '#fff' : '#ef4444' }}>
+            <AlertCircle size={20} /> Overdue
+          </button>
         </nav>
 
         {currentUser.role === 'Manager' && (
           <>
-            <div className="sidebar-section-title">Team Workload</div>
+            <div className="sidebar-section-title">Team</div>
             <div className="stats-card">
               {staffMembers.map(staff => {
                 const staffTasks = tasks.filter(t =>
@@ -734,7 +881,6 @@ function App() {
                 </button>
               </div>
             </div>
-
             <div className="api-settings-card n8n-card">
               <label><Zap size={14} /> n8n Automation</label>
               <div className="api-input-group">
@@ -842,46 +988,42 @@ function App() {
         </header>
 
         <section className="dashboard">
-          {currentUser.role === 'Manager' && (
-            <div className="stats-overview-grid">
-              <div className="stat-card-premium glass-panel">
-                <div className="stat-icon-wrapper blue">
-                  <ShieldCheck size={24} />
-                </div>
-                <div className="stat-details">
-                  <span className="stat-value">{tasks.length}</span>
-                  <span className="stat-label">Total Tasks</span>
-                </div>
+          <div className="stats-overview-grid">
+            <div className="stat-card-premium glass-panel">
+              <div className="stat-icon-wrapper blue">
+                <ShieldCheck size={24} />
               </div>
-              <div className="stat-card-premium glass-panel">
-                <div className="stat-icon-wrapper orange">
-                  <Clock size={24} />
-                </div>
-                <div className="stat-details">
-                  <span className="stat-value">{tasks.filter(t => !t.completed).length}</span>
-                  <span className="stat-label">Active Tasks</span>
-                </div>
-              </div>
-              <div className="stat-card-premium glass-panel">
-                <div className="stat-icon-wrapper green">
-                  <CheckCircle2 size={24} />
-                </div>
-                <div className="stat-details">
-                  <span className="stat-value">{tasks.filter(t => t.completed).length}</span>
-                  <span className="stat-label">Success Rate</span>
-                </div>
-              </div>
-              <div className="stat-card-premium glass-panel">
-                <div className="stat-icon-wrapper purple">
-                  <Zap size={24} />
-                </div>
-                <div className="stat-details">
-                  <span className="stat-value">{Math.round(tasks.reduce((acc, t) => acc + (t.score || 0), 0) / (tasks.length || 1))}</span>
-                  <span className="stat-label">Avg AI Score</span>
-                </div>
+              <div className="stat-details">
+                <span className="stat-value">{stats.total}</span>
+                <span className="stat-label">Total Tasks</span>
               </div>
             </div>
-          )}
+            <div className="stat-card-premium glass-panel">
+              <div className="stat-icon-wrapper orange">
+                <Clock size={24} />
+              </div>
+              <div className="stat-details">
+                <span className="stat-value">{stats.active}</span>
+                <span className="stat-label">Active Tasks</span>
+              </div>
+            </div>
+            <div
+              className={`stat-card-premium glass-panel ${filter === 'next_deadline' ? 'active-filter' : ''}`}
+              onClick={() => setFilter(filter === 'next_deadline' ? 'all' : 'next_deadline')}
+              style={{ cursor: 'pointer' }}
+            >
+              <div className="stat-icon-wrapper green">
+                <CalendarDays size={24} />
+              </div>
+              <div className="stat-details">
+                <span className="stat-value" style={{ fontSize: stats.nextDeadline.length > 10 ? '1.2rem' : '1.5rem' }}>
+                  {stats.nextDeadline}
+                </span>
+                <span className="stat-label">Next Deadline</span>
+              </div>
+              {filter === 'next_deadline' && <div className="active-dot"></div>}
+            </div>
+          </div>
 
           <div className="section-header" style={{ marginTop: '32px', marginBottom: '24px', display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: '20px' }}>
             <div style={{ width: '100%' }}>
@@ -941,7 +1083,12 @@ function App() {
                       animate={{ opacity: 1, scale: 1 }}
                       exit={{ opacity: 0, scale: 0.9 }}
                       key={task.id}
-                      className={`task-card glass-panel ${task.completed ? 'completed' : ''} ${isOverdue ? 'overdue-pulse' : ''}`}
+                      className={`task-card glass-panel priority-${task.priority?.toLowerCase() || 'medium'} ${task.completed ? 'completed' : ''} ${isOverdue ? 'overdue-pulse' : ''}`}
+                      style={{
+                        borderLeft: `6px solid ${priority.color}`,
+                        background: task.completed ? 'rgba(255, 255, 255, 0.02)' : `linear-gradient(135deg, rgba(30, 41, 59, 0.4), ${priority.color}0a)`,
+                        borderColor: `${priority.color}33`
+                      }}
                     >
                       <div className="task-header">
                         <div className="status-badge-container">
@@ -958,6 +1105,16 @@ function App() {
                           <div className={`status-pill ${task.status?.toLowerCase().replace(' ', '-') || 'not-started'}`}>
                             {task.status || 'Not Started'}
                           </div>
+                          {task.extensionStatus === 'Pending' && (
+                            <div className="status-pill warning" style={{ background: 'rgba(245, 158, 11, 0.2)', color: '#f59e0b', border: '1px solid #f59e0b' }}>
+                              Extension Pending
+                            </div>
+                          )}
+                          {task.extensionStatus === 'Rejected' && (
+                            <div className="status-pill danger" style={{ background: 'rgba(239, 68, 68, 0.2)', color: '#ef4444', border: '1px solid #ef4444' }}>
+                              Extension Rejected
+                            </div>
+                          )}
                           {task.completed && task.perfStatus && (
                             <div className={`perf-pill ${task.perfStatus.toLowerCase()}`}>
                               {task.perfStatus}
@@ -1003,20 +1160,43 @@ function App() {
                             <Zap size={14} />
                           </button>
 
+                          {isOverdue && currentUser.role === 'Manager' && (
+                            <button
+                              className="action-icon-btn"
+                              onClick={() => triggerN8nManual({ ...task, title: `[URGENT DELAY] ${task.title}` })}
+                              title="Trigger Urgency Signal"
+                              style={{ background: 'var(--danger)', boxShadow: '0 0 15px rgba(239, 68, 68, 0.4)' }}
+                            >
+                              <AlertCircle size={14} />
+                            </button>
+                          )}
+
+                          {isOverdue && currentUser.role === 'Staff' && (!task.extensionStatus || task.extensionStatus === 'Rejected') && (
+                            <button
+                              className="btn-task-action"
+                              style={{ background: 'var(--warning)', color: '#000', fontSize: '0.7rem' }}
+                              onClick={() => { setExtensionTask(task); setIsExtensionModalOpen(true); }}
+                            >
+                              Request Extension
+                            </button>
+                          )}
+
                           <div style={{ flex: 1 }}></div>
 
                           {!task.completed ? (
-                            <>
-                              {task.status === 'Not Started' ? (
-                                <button className="btn-task-action start" onClick={() => startTask(task.id)}>
-                                  <Clock size={14} /> Start
-                                </button>
-                              ) : (
-                                <button className="btn-task-action complete" onClick={() => completeTask(task.id)}>
-                                  <CheckCircle2 size={14} /> Finish
-                                </button>
-                              )}
-                            </>
+                            currentUser.role === 'Staff' && (
+                              <>
+                                {task.status === 'Not Started' ? (
+                                  <button className="btn-task-action start" onClick={() => startTask(task.id)}>
+                                    <Clock size={14} /> Start
+                                  </button>
+                                ) : (
+                                  <button className="btn-task-action complete" onClick={() => completeTask(task.id)}>
+                                    <CheckCircle2 size={14} /> Finish
+                                  </button>
+                                )}
+                              </>
+                            )
                           ) : (
                             <div className="completed-timestamp">
                               <ShieldCheck size={12} /> {task.completedTime ? format(new Date(task.completedTime), 'HH:mm') : '--:--'}
@@ -1025,11 +1205,50 @@ function App() {
                         </div>
                       </div>
 
-                      <div className="task-footer-v2">
-                        <div className="meta-item">
-                          <Calendar size={12} />
-                          <span>{task.deadline ? format(new Date(task.deadline), 'MMM d, HH:mm') : 'No Deadline'}</span>
+                      {task.extensionStatus === 'Pending' && currentUser.role === 'Manager' && (
+                        <div style={{
+                          marginTop: '20px',
+                          padding: '16px',
+                          background: 'rgba(245, 158, 11, 0.05)',
+                          borderRadius: '16px',
+                          border: '1px solid rgba(245, 158, 11, 0.2)',
+                          display: 'flex',
+                          flexDirection: 'column',
+                          gap: '12px'
+                        }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--warning)', fontSize: '0.85rem', fontWeight: '800' }}>
+                            <AlertCircle size={16} /> EXTENSION REQUESTED
+                          </div>
+                          <div style={{ fontSize: '0.8rem', color: '#fff', opacity: 0.9 }}>
+                            <strong>Reason:</strong> {task.delayReason}
+                          </div>
+                          <div style={{ fontSize: '0.8rem', color: '#fff', opacity: 0.9 }}>
+                            <strong>Proposed Deadline:</strong> {task.suggestedDeadline ? format(new Date(task.suggestedDeadline), 'MMM d, HH:mm') : 'N/A'}
+                          </div>
+                          <div style={{ display: 'flex', gap: '8px', marginTop: '4px' }}>
+                            <button className="btn-task-action start" onClick={() => approveExtension(task.id)} style={{ flex: 1, background: 'var(--success)', justifyContent: 'center' }}>Approve</button>
+                            <button className="btn-task-action start" onClick={() => rejectExtension(task.id)} style={{ flex: 1, background: 'rgba(239, 68, 68, 0.2)', border: '1px solid var(--danger)', color: 'var(--danger)', justifyContent: 'center' }}>Reject</button>
+                          </div>
                         </div>
+                      )}
+
+                      <div className="task-footer-v2">
+                        <div className="meta-item" title="Final Deadline">
+                          <Calendar size={12} />
+                          <span>Deadline: {task.deadline ? format(new Date(task.deadline), 'MMM d, HH:mm') : 'No Deadline'}</span>
+                        </div>
+                        {task.startTime && (
+                          <div className="meta-item" title="Time Started">
+                            <Clock size={12} />
+                            <span>Started: {format(new Date(task.startTime), 'MMM d, HH:mm')}</span>
+                          </div>
+                        )}
+                        {task.completed && task.completedTime && (
+                          <div className="meta-item" title="Time Finished" style={{ color: 'var(--success)' }}>
+                            <CheckCircle2 size={12} />
+                            <span>Finished: {format(new Date(task.completedTime), 'MMM d, HH:mm')}</span>
+                          </div>
+                        )}
                         <div className="meta-item">
                           <Target size={12} />
                           <span>AI:{Math.round(task.score)}</span>
@@ -1199,7 +1418,7 @@ function App() {
                       <select
                         value={newTask.reminderOffset}
                         onChange={(e) => setNewTask({ ...newTask, reminderOffset: parseInt(e.target.value) })}
-                        style={{ background: 'rgba(255,255,255,0.05)', borderRadius: '12px', padding: '12px' }}
+                        style={{ background: 'rgba(255,255,255,0.05)', borderRadius: '12px', padding: '12px', color: '#fff', border: '1px solid rgba(255,255,255,0.1)' }}
                       >
                         <option value="5">5 Minutes Before</option>
                         <option value="10">10 Minutes Before</option>
@@ -1470,6 +1689,144 @@ function App() {
           </motion.div>
         )}
       </AnimatePresence>
+
+      {/* Extension Request Modal */}
+      <AnimatePresence>
+        {isExtensionModalOpen && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="modal-overlay"
+            style={{ zIndex: 3500 }}
+          >
+            <motion.div
+              initial={{ scale: 0.9, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.9, opacity: 0 }}
+              className="modal-content glass-panel"
+              style={{ maxWidth: '500px' }}
+            >
+              <div className="modal-header">
+                <div>
+                  <h2 className="text-gradient" style={{ fontSize: '1.5rem', display: 'flex', alignItems: 'center', gap: '12px' }}>
+                    <AlertCircle size={28} color="var(--warning)" /> Deadline Extension
+                  </h2>
+                  <p style={{ color: 'var(--text-muted)', fontSize: '0.8rem' }}>Justify the delay and propose a new deadline</p>
+                </div>
+                <button className="modal-close-btn" onClick={() => setIsExtensionModalOpen(false)}>
+                  <X size={20} />
+                </button>
+              </div>
+
+              <form onSubmit={submitExtension} style={{ marginTop: '24px' }}>
+                <div className="form-group">
+                  <label>Service/Task</label>
+                  <div style={{ padding: '12px', background: 'rgba(255,255,255,0.05)', borderRadius: '12px', fontSize: '0.9rem' }}>
+                    {extensionTask?.title}
+                  </div>
+                </div>
+
+                <div className="form-group">
+                  <label>Impediment/Reason</label>
+                  <textarea
+                    required
+                    placeholder="Why was the deadline missed? Provide details..."
+                    value={extensionForm.reason}
+                    onChange={e => setExtensionForm({ ...extensionForm, reason: e.target.value })}
+                  />
+                </div>
+
+                <div className="form-group">
+                  <label>Proposed New Deadline</label>
+                  <input
+                    required
+                    type="datetime-local"
+                    value={extensionForm.newDeadline}
+                    onChange={e => setExtensionForm({ ...extensionForm, newDeadline: e.target.value })}
+                  />
+                </div>
+
+                <div className="modal-actions" style={{ marginTop: '32px' }}>
+                  <button type="button" onClick={() => setIsExtensionModalOpen(false)} className="btn-secondary" style={{ flex: 1 }}>Abort</button>
+                  <button type="submit" className="btn-primary" style={{ flex: 2, background: 'var(--warning)', color: '#000', justifyContent: 'center' }}>
+                    Submit Request
+                  </button>
+                </div>
+              </form>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* High-Impact Alarm Popup */}
+      <AnimatePresence>
+        {activeAlarmTask && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="alarm-overlay"
+          >
+            <motion.div
+              initial={{ scale: 0.5, rotate: -5 }}
+              animate={{ scale: 1, rotate: 0 }}
+              exit={{ scale: 0.5, opacity: 0 }}
+              className="alarm-modal glass-panel"
+            >
+              <div className="alarm-header-bg"></div>
+              <div className="alarm-content-main">
+                <motion.div
+                  animate={{ scale: [1, 1.2, 1], rotate: [0, 5, -5, 0] }}
+                  transition={{ repeat: Infinity, duration: 1.5 }}
+                  className="alarm-bell-icon"
+                >
+                  <AlertCircle size={80} color="#ef4444" />
+                </motion.div>
+
+                <h1 className="alarm-title">CRITICAL TIMELINE ALERT</h1>
+                <p className="alarm-subtitle">A task deadline has been reached or breached.</p>
+
+                <div className="alarm-task-details">
+                  <div className="alarm-task-name">{activeAlarmTask.title}</div>
+                  <div className="alarm-task-meta">
+                    <span><Clock size={16} /> Due: {format(new Date(activeAlarmTask.deadline), 'HH:mm')}</span>
+                    <span><Users size={16} /> Assigned to: {Array.isArray(activeAlarmTask.assignees) ? activeAlarmTask.assignees.map(a => a.name).join(', ') : activeAlarmTask.assignee}</span>
+                  </div>
+                </div>
+
+                <div className="alarm-status-pulse">
+                  <Zap size={20} /> SYSTEM INTERVENTION REQUIRED
+                </div>
+
+                <div style={{ display: 'flex', gap: '16px', width: '100%', marginTop: '10px' }}>
+                  <button
+                    className="btn-alarm-acknowledge"
+                    style={{ flex: 1, background: 'rgba(255,255,255,0.1)', border: '1px solid rgba(255,255,255,0.2)', color: '#fff' }}
+                    onClick={() => setActiveAlarmTask(null)}
+                  >
+                    DISMISS
+                  </button>
+                  {currentUser?.role === 'Staff' && (
+                    <button
+                      className="btn-alarm-acknowledge"
+                      style={{ flex: 2 }}
+                      onClick={() => {
+                        setExtensionTask(activeAlarmTask);
+                        setIsExtensionModalOpen(true);
+                        setActiveAlarmTask(null);
+                      }}
+                    >
+                      REQUEST EXTENSION
+                    </button>
+                  )}
+                </div>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
     </div >
 
   );
