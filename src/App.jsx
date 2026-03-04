@@ -23,10 +23,13 @@ import {
   X,
   Network,
   CalendarDays,
-  Target
+  Target,
+  Mic,
+  FileText
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { format, differenceInDays, isPast } from 'date-fns';
+import SlackMessagingInput from './components/SlackMessagingInput';
 import './App.css';
 
 const PRIORITY_LEVELS = {
@@ -37,6 +40,7 @@ const PRIORITY_LEVELS = {
 };
 
 const MANAGER_CREDS = {
+  id: 'M1',
   username: 'admin',
   password: '123',
   name: 'Admin Manager',
@@ -45,16 +49,9 @@ const MANAGER_CREDS = {
 };
 
 const INITIAL_STAFF = [
-  { id: 'S1', username: 'adam', password: '111', name: 'Adam Jensen', email: 'adam@example.com', role: 'Staff' },
-  { id: 'S2', username: 'sarah', password: '222', name: 'Sarah Connor', email: 'sarah@example.com', role: 'Staff' },
-  { id: 'S3', username: 'james', password: '333', name: 'James Moriarty', email: 'james@example.com', role: 'Staff' },
-  { id: 'S4', username: 'ripley', password: '444', name: 'Ellen Ripley', email: 'ripley@example.com', role: 'Staff' },
-  { id: 'S5', username: 'wick', password: '555', name: 'John Wick', email: 'wick@example.com', role: 'Staff' },
-  { id: 'S6', username: 'tony', password: '666', name: 'Tony Stark', email: 'tony@example.com', role: 'Staff' },
-  { id: 'S7', username: 'diana', password: '777', name: 'Diana Prince', email: 'diana@example.com', role: 'Staff' },
-  { id: 'S8', username: 'bruce', password: '888', name: 'Bruce Wayne', email: 'bruce@example.com', role: 'Staff' },
-  { id: 'S9', username: 'peter', password: '999', name: 'Peter Parker', email: 'peter@example.com', role: 'Staff' },
-  { id: 'S10', username: 'natasha', password: '000', name: 'Natasha Romanov', email: 'natasha@example.com', role: 'Staff' },
+  { id: 'S1', username: 'anagh', password: '111', name: 'Anagh', email: 'anagh@example.com', role: 'Staff' },
+  { id: 'S2', username: 'krishna', password: '222', name: 'Krishna', email: 'krishna@example.com', role: 'Staff' },
+  { id: 'S3', username: 'nishanth', password: '333', name: 'Nishanth', email: 'nishanth@example.com', role: 'Staff' },
 ];
 
 
@@ -64,8 +61,10 @@ function App() {
     return saved ? JSON.parse(saved) : [];
   });
   const [staffMembers, setStaffMembers] = useState(() => {
-    const saved = localStorage.getItem('ai-staff');
-    return saved ? JSON.parse(saved) : INITIAL_STAFF;
+    const saved = localStorage.getItem('ai-staff-v1');
+    const data = saved ? JSON.parse(saved) : INITIAL_STAFF;
+    // Migration: Ensure all staff have IDs
+    return data.map((s, idx) => ({ ...s, id: s.id || `S${idx + 1}` }));
   });
   const [notifications, setNotifications] = useState(() => {
     const saved = localStorage.getItem('ai-notifications');
@@ -75,12 +74,16 @@ function App() {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
   const [filter, setFilter] = useState('all');
-  const [botApiKey, setBotApiKey] = useState(() => localStorage.getItem('bot-api-key') || '');
   const [n8nUrl, setN8nUrl] = useState(() => localStorage.getItem('n8n-webhook-url') || '');
   const [isSending, setIsSending] = useState(false);
   const [currentUser, setCurrentUser] = useState(() => {
     const saved = localStorage.getItem('active-user');
-    return saved ? JSON.parse(saved) : null;
+    let user = saved ? JSON.parse(saved) : null;
+    // Migration: Ensure manager has ID if logged in previously
+    if (user && user.role === 'Manager' && !user.id) {
+      user = { ...user, id: MANAGER_CREDS.id };
+    }
+    return user;
   });
   const [loginData, setLoginData] = useState({ username: '', password: '' });
   const [loginError, setLoginError] = useState('');
@@ -94,9 +97,10 @@ function App() {
     description: '',
     deadline: '', // Now combined date+time
     assignees: [],
-    phone: '',
+    alertEmail: '',
     reminderOffset: 30, // Default 30 min before
-    priority: 'MEDIUM'
+    priority: 'MEDIUM',
+    emailNotification: false
   });
   const [formErrors, setFormErrors] = useState({});
   const [showAssigneeDropdown, setShowAssigneeDropdown] = useState(false);
@@ -110,6 +114,14 @@ function App() {
   const [extensionForm, setExtensionForm] = useState({ reason: '', newDeadline: '' });
 
   const [activeAlarmTask, setActiveAlarmTask] = useState(null);
+  const [messages, setMessages] = useState(() => {
+    const saved = localStorage.getItem('ai-messages');
+    return saved ? JSON.parse(saved) : [];
+  });
+  const [isChatOpen, setIsChatOpen] = useState(false);
+  const [isReportingModalOpen, setIsReportingModalOpen] = useState(false);
+  const [activeChatUser, setActiveChatUser] = useState(null);
+  const [chatMessage, setChatMessage] = useState('');
 
 
 
@@ -118,7 +130,7 @@ function App() {
   }, [tasks]);
 
   useEffect(() => {
-    localStorage.setItem('ai-staff', JSON.stringify(staffMembers));
+    localStorage.setItem('ai-staff-v1', JSON.stringify(staffMembers));
   }, [staffMembers]);
 
   useEffect(() => {
@@ -127,8 +139,8 @@ function App() {
 
 
   useEffect(() => {
-    localStorage.setItem('bot-api-key', botApiKey);
-  }, [botApiKey]);
+    localStorage.setItem('ai-messages', JSON.stringify(messages));
+  }, [messages]);
 
   useEffect(() => {
     localStorage.setItem('n8n-webhook-url', n8nUrl);
@@ -137,11 +149,107 @@ function App() {
   useEffect(() => {
     localStorage.setItem('active-user', JSON.stringify(currentUser));
   }, [currentUser]);
-  const playNotificationSound = () => {
+
+  // Sync state across multiple tabs
+  useEffect(() => {
+    const handleStorageChange = (e) => {
+      if (e.key === 'ai-tasks') {
+        const updated = JSON.parse(e.newValue);
+        if (updated) setTasks(updated);
+      }
+      if (e.key === 'ai-staff-v1') {
+        const updated = JSON.parse(e.newValue);
+        if (updated) setStaffMembers(updated);
+      }
+      if (e.key === 'ai-messages') {
+        const updated = JSON.parse(e.newValue);
+        if (updated && updated.length > 0) {
+          const lastMsg = updated[updated.length - 1];
+          const activeUser = JSON.parse(localStorage.getItem('active-user'));
+
+          if (activeUser && lastMsg.senderId !== activeUser.id) {
+            const isForMe = lastMsg.receiverId === activeUser.id || lastMsg.receiverId === 'broadcast';
+
+            if (isForMe) {
+              playChatSound();
+
+              // Add to visual notifications list for interactive UI alert
+              const chatNotif = {
+                id: Date.now() + Math.random(),
+                title: `Message from ${lastMsg.senderName}`,
+                message: lastMsg.content.length > 40 ? lastMsg.content.substring(0, 40) + '...' : lastMsg.content,
+                type: 'info',
+                isChat: true,
+                timestamp: new Date().toISOString()
+              };
+              setNotifications(prev => [chatNotif, ...prev]);
+
+              // Browser push if permitted
+              if (Notification.permission === "granted") {
+                new Notification(`New Briefing: ${lastMsg.senderName}`, {
+                  body: lastMsg.content,
+                  icon: "/vite.svg"
+                });
+              }
+            }
+          }
+          setMessages(updated);
+        }
+      }
+    };
+    window.addEventListener('storage', handleStorageChange);
+    return () => window.removeEventListener('storage', handleStorageChange);
+  }, []);
+  function playNotificationSound() {
     const audio = new Audio('https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3');
     audio.volume = 0.5;
     audio.play().catch(e => console.warn("Audio blocked by browser. User interaction needed."));
-  };
+  }
+
+  function playChatSound() {
+    // Unique subtle ping for chat messages
+    const audio = new Audio('https://assets.mixkit.co/active_storage/sfx/2358/2358-preview.mp3');
+    audio.volume = 0.4;
+    audio.play().catch(e => console.warn("Chat sound blocked."));
+  }
+
+  function triggerWebhook(task, eventType = 'manual_trigger') {
+    if (!n8nUrl) return;
+
+    const formData = new URLSearchParams();
+    formData.append('event', eventType);
+    formData.append('task_title', task.title);
+    formData.append('task_desc', task.description || 'No description provided.');
+
+    const names = Array.isArray(task.assignees) ? task.assignees.map(a => a.name).join(', ') : (task.assignee || 'Assigned Staff');
+    const emails = Array.isArray(task.assignees) ? task.assignees.map(a => a.email).join(', ') : (task.email || '');
+
+    formData.append('assignee_name', names);
+    formData.append('assignee_email', emails);
+    formData.append('alert_email', (task.alertEmail || '').toLowerCase().trim());
+    formData.append('priority_score', Math.round(task.score || 0));
+    formData.append('deadline', task.deadline || '');
+    formData.append('status', task.status || 'Pending');
+    formData.append('email_notification', task.emailNotification ? 'true' : 'false');
+    formData.append('timestamp', new Date().toISOString());
+
+    fetch(n8nUrl, {
+      method: 'POST',
+      mode: 'no-cors',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: formData.toString()
+    }).catch(err => console.error("Webhook dispatch failed:", err));
+
+    if (eventType === 'manual_trigger') {
+      alert(`✅ Signal sent to n8n for "${task.title}"!`);
+    }
+  }
+
+  function triggerN8nManual(task) {
+    setIsSending(true);
+    triggerWebhook(task, 'manual_trigger');
+    setTimeout(() => setIsSending(false), 500);
+  }
 
   // Dedicated Alarm Sound Management
   useEffect(() => {
@@ -226,11 +334,10 @@ function App() {
               // n8n Automated Reminder
               if (n8nUrl) triggerWebhook(task, 'automated_reminder');
 
-              if (botApiKey && task.phone) {
-                const assigneeText = Array.isArray(task.assignees) ? task.assignees.map(a => a.name).join(', ') : (task.assignee || 'Staff');
-                const text = `*⏰ REMINDER*\n\n📌 Task: ${task.title}\n📅 Due in: ${reminderOffset} minutes.\n👤 Assignee: ${assigneeText}`;
-                const cleanNumber = task.phone.replace(/\D/g, '');
-                fetch(`https://api.callmebot.com/whatsapp.php?phone=${cleanNumber}&text=${encodeURIComponent(text)}&apikey=${botApiKey}`, { mode: 'no-cors' });
+              // Handle individual Alert Email if set
+              if (task.alertEmail) {
+                // You could add a specific manual fetch to an email API here,
+                // but usually, n8n handles the heavy lifting via the triggerWebhook call.
               }
 
               hasUpdates = true;
@@ -265,6 +372,21 @@ function App() {
             // n8n Critical Alarm
             if (n8nUrl) triggerWebhook(task, 'deadline_alarm');
 
+            if (task.emailNotification) {
+              // Trigger n8n Automated Email
+              if (n8nUrl) triggerWebhook(task, 'automated_email');
+
+              // Dispatch In-App Email Notification
+              const emailNotif = {
+                id: Date.now() + Math.random(),
+                title: 'EMAIL DISPATCHED',
+                message: `Automated report for "${task.title}" has been sent to all assignees.`,
+                type: 'info',
+                timestamp: new Date().toISOString()
+              };
+              setNotifications(prev => [emailNotif, ...prev]);
+            }
+
             hasUpdates = true;
             return { ...task, deadlineAlarmSent: true };
           }
@@ -277,7 +399,7 @@ function App() {
       }
     }, 5000);
     return () => clearInterval(interval);
-  }, [tasks, botApiKey, n8nUrl]);
+  }, [tasks, n8nUrl]);
 
   useEffect(() => {
     if ("Notification" in window && Notification.permission === "default") {
@@ -319,46 +441,8 @@ function App() {
       };
       setNotifications(prev => [welcomeNotif, ...prev]);
     } else {
-      setLoginError('Invalid username or password. (Hint: admin/123 or adam/111)');
+      setLoginError('Invalid username or password. (Hint: admin/123 or anagh/111)');
     }
-  };
-
-
-  const triggerWebhook = (task, eventType = 'manual_trigger') => {
-    if (!n8nUrl) return;
-
-    const formData = new URLSearchParams();
-    formData.append('event', eventType);
-    formData.append('task_title', task.title);
-    formData.append('task_desc', task.description || 'No description provided.');
-
-    const names = Array.isArray(task.assignees) ? task.assignees.map(a => a.name).join(', ') : (task.assignee || 'Assigned Staff');
-    const emails = Array.isArray(task.assignees) ? task.assignees.map(a => a.email).join(', ') : (task.email || '');
-
-    formData.append('assignee_name', names);
-    formData.append('assignee_email', emails);
-    formData.append('phone_number', task.phone || '');
-    formData.append('priority_score', Math.round(task.score || 0));
-    formData.append('deadline', task.deadline || '');
-    formData.append('status', task.status || 'Pending');
-    formData.append('timestamp', new Date().toISOString());
-
-    fetch(n8nUrl, {
-      method: 'POST',
-      mode: 'no-cors',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: formData.toString()
-    }).catch(err => console.error("Webhook dispatch failed:", err));
-
-    if (eventType === 'manual_trigger') {
-      alert(`✅ Signal sent to n8n for "${task.title}"!`);
-    }
-  };
-
-  const triggerN8nManual = (task) => {
-    setIsSending(true);
-    triggerWebhook(task, 'manual_trigger');
-    setTimeout(() => setIsSending(false), 500);
   };
 
   const calculateScore = (task) => {
@@ -386,11 +470,45 @@ function App() {
     return score;
   };
 
+  const reportingData = useMemo(() => {
+    return staffMembers.map(staff => {
+      const staffTasks = tasks.filter(t => {
+        const userEmail = staff.email?.toLowerCase().trim();
+        const isDirectlyAssigned = t.email?.toLowerCase().trim() === userEmail;
+        const isMultiAssigned = Array.isArray(t.assignees) && t.assignees.some(a => {
+          const emailToMatch = typeof a === 'string' ? a : a?.email;
+          return emailToMatch?.toLowerCase().trim() === userEmail;
+        });
+        return isDirectlyAssigned || isMultiAssigned;
+      });
+
+      return {
+        ...staff,
+        total: staffTasks.length,
+        completed: staffTasks.filter(t => t.completed).length,
+        pending: staffTasks.filter(t => !t.completed).length,
+        overdue: staffTasks.filter(t => !t.completed && t.deadline && isPast(new Date(t.deadline))).length,
+        avgScore: staffTasks.length > 0 ? Math.round(staffTasks.reduce((acc, t) => acc + (t.score || 0), 0) / staffTasks.length) : 0
+      };
+    });
+  }, [tasks, staffMembers]);
+
   const stats = useMemo(() => {
-    const userTasks = tasks.filter(t =>
-      currentUser?.role === 'Manager' ||
-      (Array.isArray(t.assignees) ? t.assignees.some(a => a.email === currentUser?.email) : t.email === currentUser?.email)
-    );
+    const userTasks = tasks.filter(t => {
+      if (currentUser?.role === 'Manager') return true;
+      const userEmail = currentUser?.email?.toLowerCase().trim();
+      if (!userEmail) return false;
+
+      // Robust assignment check
+      const isDirectlyAssigned = t.email?.toLowerCase().trim() === userEmail;
+      const isLegacyAssigned = t.assignee?.toLowerCase().trim() === currentUser.name?.toLowerCase().trim();
+      const isMultiAssigned = Array.isArray(t.assignees) && t.assignees.some(a => {
+        const emailToMatch = typeof a === 'string' ? a : a?.email;
+        return emailToMatch?.toLowerCase().trim() === userEmail;
+      });
+
+      return isDirectlyAssigned || isLegacyAssigned || isMultiAssigned;
+    });
 
     const activeTasks = userTasks.filter(t => !t.completed);
     const sortedByDeadline = [...activeTasks].filter(t => t.deadline).sort((a, b) => new Date(a.deadline) - new Date(b.deadline));
@@ -404,7 +522,7 @@ function App() {
     };
   }, [tasks, currentUser]);
 
-  const sendWhatsApp = (task) => {
+  const sendDirectMail = (task) => {
     const assigneeNames = Array.isArray(task.assignees) ? task.assignees.map(a => a.name).join(', ') : (task.assignee || 'You');
     const text = `*AIsync Reminder for ${assigneeNames}*\n\n` +
       `📌 *Task:* ${task.title}\n` +
@@ -413,27 +531,13 @@ function App() {
       `📅 *Deadline:* ${task.deadline || 'No date'}\n` +
       `🧠 *AI Priority Score:* ${Math.round(task.score)}\n`;
 
-    const message = encodeURIComponent(text);
-    const cleanNumber = task.phone.replace(/\D/g, '');
-    window.open(`https://wa.me/${cleanNumber}?text=${message}`, '_blank');
+    const subject = encodeURIComponent(`Task Alert: ${task.title}`);
+    const body = encodeURIComponent(`Strategic Info:\nTask: ${task.title}\nDeadline: ${task.deadline}`);
+    window.open(`mailto:${task.alertEmail || ''}?subject=${subject}&body=${body}`);
   };
 
-  const testBotConnection = () => {
-    if (!botApiKey) {
-      alert("Please enter your CallMeBot API Key first.");
-      return;
-    }
-    const testPhone = prompt("Enter your phone number (with country code, e.g., +1234567890) to send a test message:");
-    if (!testPhone) return;
-
-    const cleanNumber = testPhone.replace(/\D/g, '');
-    const text = "🚀 *AIsync Connection Test*\n\nYour CallMeBot API is successfully connected to AIsync! Automated reminders are now active.";
-
-    fetch(`https://api.callmebot.com/whatsapp.php?phone=${cleanNumber}&text=${encodeURIComponent(text)}&apikey=${botApiKey}`, {
-      mode: 'no-cors'
-    })
-      .then(() => alert("Test message sent! Please check your WhatsApp."))
-      .catch(err => alert("Failed to send test message: " + err.message));
+  const testEmailSystem = () => {
+    alert("Email routing is now configured to trigger via the n8n Webhook at the deadline.");
   };
 
   const testN8nConnection = () => {
@@ -471,9 +575,16 @@ function App() {
 
   const filteredTasks = prioritizedTasks.filter(task => {
     const matchesSearch = task.title.toLowerCase().includes(searchTerm.toLowerCase());
-    const isAssigned = Array.isArray(task.assignees)
-      ? task.assignees.some(a => a.email === currentUser?.email)
-      : task.email === currentUser?.email;
+    const userEmail = currentUser?.email?.toLowerCase().trim();
+
+    const isDirectlyAssigned = task.email?.toLowerCase().trim() === userEmail;
+    const isLegacyAssigned = task.assignee?.toLowerCase().trim() === currentUser?.name?.toLowerCase().trim();
+    const isMultiAssigned = Array.isArray(task.assignees) && task.assignees.some(a => {
+      const emailToMatch = typeof a === 'string' ? a : a?.email;
+      return emailToMatch?.toLowerCase().trim() === userEmail;
+    });
+
+    const isAssigned = isDirectlyAssigned || isLegacyAssigned || isMultiAssigned;
     const matchesRole = currentUser?.role === 'Manager' || isAssigned;
 
 
@@ -483,10 +594,19 @@ function App() {
     if (filter === 'pending') matchesStatus = !task.completed;
     if (filter === 'overdue') matchesStatus = !task.completed && task.deadline && isPast(new Date(task.deadline));
     if (filter === 'next_deadline') {
-      const userTasksForNext = prioritizedTasks.filter(t =>
-        currentUser?.role === 'Manager' ||
-        (Array.isArray(t.assignees) ? t.assignees.some(a => a.email === currentUser?.email) : t.email === currentUser?.email)
-      );
+      const userEmailForNext = currentUser?.email?.toLowerCase().trim();
+      const userTasksForNext = prioritizedTasks.filter(t => {
+        if (currentUser?.role === 'Manager') return true;
+        if (!userEmailForNext) return false;
+
+        const isD = t.email?.toLowerCase().trim() === userEmailForNext;
+        const isL = t.assignee?.toLowerCase().trim() === currentUser?.name?.toLowerCase().trim();
+        const isM = Array.isArray(t.assignees) && t.assignees.some(a => {
+          const e = typeof a === 'string' ? a : a?.email;
+          return e?.toLowerCase().trim() === userEmailForNext;
+        });
+        return isD || isL || isM;
+      });
       const activeTasks = userTasksForNext.filter(t => !t.completed && t.deadline);
       const sortedByDeadline = [...activeTasks].sort((a, b) => new Date(a.deadline) - new Date(b.deadline));
       matchesStatus = sortedByDeadline.length > 0 && task.id === sortedByDeadline[0].id;
@@ -499,12 +619,14 @@ function App() {
       matchesPriority = info.label.toLowerCase() === priorityFilter.toLowerCase();
     }
 
-    // Team Filter (Manager only)
     let matchesTeam = true;
     if (currentUser?.role === 'Manager' && teamFilter !== 'all') {
-      matchesTeam = Array.isArray(task.assignees)
-        ? task.assignees.some(a => a.email === teamFilter)
-        : task.email === teamFilter;
+      const targetEmail = teamFilter.toLowerCase().trim();
+      matchesTeam = (task.email?.toLowerCase().trim() === targetEmail) ||
+        (Array.isArray(task.assignees) && task.assignees.some(a => {
+          const e = typeof a === 'string' ? a : a?.email;
+          return e?.toLowerCase().trim() === targetEmail;
+        }));
     }
 
 
@@ -517,6 +639,15 @@ function App() {
     if (!newTask.title.trim()) errors.title = "Task objective is required";
     if (newTask.assignees.length === 0) errors.assignee = "Please select at least one team member";
     if (!newTask.deadline) errors.deadline = "Deadline date and time is required";
+    else if (isPast(new Date(newTask.deadline)) && differenceInDays(new Date(newTask.deadline), new Date()) < 0) {
+      // Allow today, but not past dates
+      // More strictly, isPast matches any time before "now".
+      // If we only care about the DAY, we can just check isPast.
+      // Since it's a deadline, it MUST be in the future.
+      if (new Date(newTask.deadline) < new Date()) {
+        errors.deadline = "Deadline must be in the future";
+      }
+    }
 
     if (Object.keys(errors).length > 0) {
       setFormErrors(errors);
@@ -533,7 +664,7 @@ function App() {
       score: calculateScore(newTask)
     };
 
-    setTasks([task, ...tasks]);
+    setTasks(prev => [task, ...prev]);
 
     // Add Notification for all assignees
     const newNotif = {
@@ -547,7 +678,7 @@ function App() {
     setNotifications(prev => [newNotif, ...prev]);
     playNotificationSound();
 
-    setNewTask({ title: '', description: '', deadline: '', assignees: [], phone: '', reminderOffset: 30, priority: 'MEDIUM' });
+    setNewTask({ title: '', description: '', deadline: '', assignees: [], alertEmail: '', reminderOffset: 30, priority: 'MEDIUM', emailNotification: true });
     setFormErrors({});
     setShowAssigneeDropdown(false);
 
@@ -659,6 +790,10 @@ function App() {
       alert("Please provide both a reason and a proposed new deadline.");
       return;
     }
+    if (new Date(extensionForm.newDeadline) < new Date()) {
+      alert("Proposed deadline must be in the future.");
+      return;
+    }
     setTasks(tasks.map(t => t.id === extensionTask.id ? {
       ...t,
       extensionStatus: 'Pending',
@@ -698,6 +833,87 @@ function App() {
 
   const rejectExtension = (id) => {
     setTasks(tasks.map(t => t.id === id ? { ...t, extensionStatus: 'Rejected' } : t));
+  };
+
+  const sendChatMessage = (e) => {
+    e.preventDefault();
+    if (!chatMessage.trim() || !activeChatUser) return;
+
+    const newMessage = {
+      id: Date.now(),
+      senderId: currentUser.id,
+      senderName: currentUser.name,
+      receiverId: activeChatUser.id,
+      content: chatMessage,
+      timestamp: new Date().toISOString(),
+      read: false
+    };
+
+    setMessages(prev => [...prev, newMessage]);
+    setChatMessage('');
+    // playNotificationSound() removed from here so sender doesn't hear own alert
+  };
+
+  const markMessagesAsRead = (userId) => {
+    setMessages(prev => prev.map(m =>
+      (m.senderId === userId && m.receiverId === currentUser.id) ? { ...m, read: true } : m
+    ));
+  };
+
+  const exportToExcel = () => {
+    // 1. Prepare Task Data
+    const headers = ["Task ID", "Title", "Description", "Assignees", "Deadline", "Status", "AI Score", "Completion Status", "Completed At"];
+    const rows = tasks.map(task => {
+      const assignees = Array.isArray(task.assignees)
+        ? task.assignees.map(a => a.name).join(", ")
+        : (task.assignee || "Unassigned");
+
+      return [
+        task.id,
+        `"${task.title.replace(/"/g, '""')}"`,
+        `"${(task.description || "").replace(/"/g, '""')}"`,
+        `"${assignees}"`,
+        task.deadline ? format(new Date(task.deadline), 'yyyy-MM-dd HH:mm') : "N/A",
+        task.status || "Pending",
+        Math.round(task.score || 0),
+        task.perfStatus || (task.completed ? "Completed" : "Pending"),
+        task.completedTime ? format(new Date(task.completedTime), 'yyyy-MM-dd HH:mm') : "N/A"
+      ];
+    });
+
+    // 2. Prepare Staff Summary Data
+    const staffHeaders = ["\n\nStaff Name", "Email", "Total Tasks", "Completed", "Pending", "Overdue", "Avg AI Score"];
+    const staffRows = reportingData.map(s => [
+      s.name,
+      s.email,
+      s.total,
+      s.completed,
+      s.pending,
+      s.overdue,
+      s.avgScore
+    ]);
+
+    // Combine everything
+    const csvContent = [
+      ["STRATEGIC TASK REPORT"],
+      ["Generated At", format(new Date(), 'yyyy-MM-dd HH:mm:ss')],
+      [],
+      ["DETAILED TASK LIST"],
+      headers,
+      ...rows,
+      staffHeaders,
+      ...staffRows
+    ].map(e => e.join(",")).join("\n");
+
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const link = document.createElement("a");
+    const url = URL.createObjectURL(blob);
+    link.setAttribute("href", url);
+    link.setAttribute("download", `AIsync_Report_${format(new Date(), 'yyyyMMdd_HHmm')}.csv`);
+    link.style.visibility = 'hidden';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
   };
 
 
@@ -808,8 +1024,38 @@ function App() {
           <button className={filter === 'completed' ? 'active' : ''} onClick={() => setFilter('completed')}>
             <CheckCircle2 size={20} /> Completed
           </button>
+          <button className={isChatOpen ? 'active' : ''} onClick={() => setIsChatOpen(true)}>
+            <div style={{ position: 'relative' }}>
+              <MessageCircle size={20} />
+              {(messages.filter(m => m.receiverId === currentUser?.id && !m.read).length > 0 ||
+                messages.filter(m => m.receiverId === 'broadcast' && !(m.readBy || []).includes(currentUser?.id)).length > 0) && (
+                  <span style={{
+                    position: 'absolute',
+                    top: '-5px',
+                    right: '-5px',
+                    width: '10px',
+                    height: '10px',
+                    background: 'var(--danger)',
+                    borderRadius: '50%',
+                    border: '2px solid var(--bg-card)'
+                  }}></span>
+                )}
+            </div>
+            Messages
+          </button>
           <button className={filter === 'overdue' ? 'active' : ''} onClick={() => setFilter('overdue')} style={{ color: filter === 'overdue' ? '#fff' : '#ef4444' }}>
             <AlertCircle size={20} /> Overdue
+          </button>
+
+          <button
+            style={{ marginTop: '20px', background: 'rgba(255,255,255,0.05)', justifyContent: 'center', fontSize: '0.7rem' }}
+            onClick={() => {
+              const savedTasks = localStorage.getItem('ai-tasks');
+              if (savedTasks) setTasks(JSON.parse(savedTasks));
+              alert("Strategic data synchronized with local storage.");
+            }}
+          >
+            <Zap size={14} /> Sync Systems
           </button>
         </nav>
 
@@ -818,16 +1064,22 @@ function App() {
             <div className="sidebar-section-title">Team</div>
             <div className="stats-card">
               {staffMembers.map(staff => {
-                const staffTasks = tasks.filter(t =>
-                  Array.isArray(t.assignees)
-                    ? t.assignees.some(a => a.email === staff.email)
-                    : t.email === staff.email
-                ).filter(t => !t.completed).length;
+                const staffEmail = staff.email?.toLowerCase().trim();
+                const staffTasks = tasks.filter(t => {
+                  if (t.completed) return false;
+                  return Array.isArray(t.assignees)
+                    ? t.assignees.some(a => a.email?.toLowerCase().trim() === staffEmail)
+                    : t.email?.toLowerCase().trim() === staffEmail;
+                }).length;
 
                 return (
                   <button
                     key={staff.id}
-                    onClick={() => setSelectedStaffDetails(staff)}
+                    onClick={() => {
+                      setSelectedStaffDetails(staff);
+                      setTeamFilter(staff.email);
+                      setFilter('all');
+                    }}
                     className="staff-link"
                     style={{
                       display: 'flex',
@@ -868,17 +1120,11 @@ function App() {
             </div>
 
             <div className="api-settings-card">
-              <label><Smartphone size={14} /> WhatsApp Gateway</label>
+              <label><Mail size={14} /> Alert Gateway (Direct)</label>
               <div className="api-input-group">
-                <input
-                  type="password"
-                  placeholder="CallMeBot Key"
-                  value={botApiKey}
-                  onChange={(e) => setBotApiKey(e.target.value)}
-                />
-                <button className="test-api-btn" onClick={testBotConnection}>
-                  <Send size={14} />
-                </button>
+                <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', background: 'rgba(0,0,0,0.2)', padding: '10px', borderRadius: '8px', border: '1px solid rgba(255,255,255,0.05)', width: '100%' }}>
+                  System will now route critical alerts to provided email addresses via n8n integration.
+                </div>
               </div>
             </div>
             <div className="api-settings-card n8n-card">
@@ -903,11 +1149,20 @@ function App() {
             <button
               className="btn-primary"
               style={{ width: '100%', marginTop: '12px', background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)' }}
+              onClick={() => setIsReportingModalOpen(true)}
+            >
+              <FileText size={18} /> Detailed Reporting
+            </button>
+
+            <button
+              className="btn-primary"
+              style={{ width: '100%', marginTop: '12px', background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)' }}
               onClick={() => setIsStaffModalOpen(true)}
             >
               <Users size={18} /> Manage Team
             </button>
           </>
+
 
         )}
 
@@ -1030,36 +1285,48 @@ function App() {
               <h1 className="text-gradient" style={{ fontSize: '2.4rem', letterSpacing: '-0.03em' }}>Task List</h1>
             </div>
 
-            {notifications.filter(n => currentUser.role === 'Staff' && n.assignees?.includes(currentUser.email)).length > 0 && (
-              <motion.div
-                initial={{ y: -20, opacity: 0 }}
-                animate={{ y: 0, opacity: 1 }}
-                className="intelligence-alert glass-panel"
-                style={{ width: '100%' }}
-              >
-                <div className="alert-glow"></div>
-                <div className="alert-content">
-                  <div className="alert-icon bounce">
-                    <Zap size={20} />
+            {(() => {
+              const userEmail = currentUser?.email?.toLowerCase().trim();
+              const relevantNotifs = notifications.filter(n => {
+                const userEmail = currentUser?.email?.toLowerCase().trim();
+                const userRole = currentUser?.role;
+                if (userRole === 'Manager') return true;
+                if (!userEmail) return false;
+
+                return Array.isArray(n.assignees) && n.assignees.some(email =>
+                  email?.toLowerCase().trim() === userEmail
+                );
+              });
+
+              if (relevantNotifs.length === 0) return null;
+
+              const activeNotif = relevantNotifs[0];
+
+              return (
+                <motion.div
+                  initial={{ y: -20, opacity: 0 }}
+                  animate={{ y: 0, opacity: 1 }}
+                  className="intelligence-alert glass-panel"
+                  style={{ width: '100%' }}
+                >
+                  <div className="alert-glow"></div>
+                  <div className="alert-content">
+                    <div className="alert-icon bounce">
+                      <Zap size={20} />
+                    </div>
+                    <div className="alert-text">
+                      <span className="alert-title">Intelligence Alert</span>
+                      <span className="alert-msg">{activeNotif.message}</span>
+                    </div>
+                    <button className="alert-dismiss" onClick={() => {
+                      setNotifications(prev => prev.filter(n => n.id !== activeNotif.id));
+                    }}>
+                      Acknowledge
+                    </button>
                   </div>
-                  <div className="alert-text">
-                    <span className="alert-title">Intelligence Alert</span>
-                    <span className="alert-msg">
-                      {notifications.filter(n => currentUser.role === 'Staff' && n.assignees?.includes(currentUser.email))[0].message}
-                    </span>
-                  </div>
-                  <button className="alert-dismiss" onClick={() => {
-                    const filtered = notifications.filter(n => currentUser.role === 'Staff' && n.assignees?.includes(currentUser.email));
-                    if (filtered.length > 0) {
-                      const idToDismiss = filtered[0].id;
-                      setNotifications(prev => prev.filter(n => n.id !== idToDismiss));
-                    }
-                  }}>
-                    Acknowledge
-                  </button>
-                </div>
-              </motion.div>
-            )}
+                </motion.div>
+              );
+            })()}
           </div>
 
           <div className="task-grid">
@@ -1069,11 +1336,24 @@ function App() {
                   <Brain size={48} color="var(--text-muted)" />
                   <h3>No Active Tasks</h3>
                   <p>All clear! Or try adjusting your filters.</p>
+                  {(filter !== 'all' || priorityFilter !== 'all' || teamFilter !== 'all' || searchTerm !== '') && (
+                    <button
+                      className="btn-secondary"
+                      style={{ marginTop: '16px', fontSize: '0.8rem' }}
+                      onClick={() => {
+                        setFilter('all');
+                        setPriorityFilter('all');
+                        setTeamFilter('all');
+                        setSearchTerm('');
+                      }}
+                    >
+                      Clear All Filters
+                    </button>
+                  )}
                 </div>
               ) : (
                 filteredTasks.map((task) => {
-                  const priority = task.priority ? PRIORITY_LEVELS[task.priority] : getPriorityInfo(task.score);
-                  const aiBadge = getAiBadge(task);
+                  const priority = (task.priority && PRIORITY_LEVELS[task.priority]) || getPriorityInfo(task.score);
                   const isOverdue = task.deadline && isPast(new Date(task.deadline)) && !task.completed;
 
                   return (
@@ -1145,15 +1425,15 @@ function App() {
                           </div>
                           <span className="assignee-names">
                             {Array.isArray(task.assignees)
-                              ? task.assignees.map(a => a.name.split(' ')[0]).join(', ')
+                              ? task.assignees.map(a => (a.name || 'Anonymous').split(' ')[0]).join(', ')
                               : (task.assignee || 'Self')}
                           </span>
                         </div>
 
                         <div className="task-actions-row">
-                          {task.phone && (
-                            <button className="action-icon-btn whatsapp" onClick={() => sendWhatsApp(task)}>
-                              <MessageCircle size={14} />
+                          {task.alertEmail && (
+                            <button className="action-icon-btn email-direct" onClick={() => sendDirectMail(task)} style={{ background: 'var(--primary)' }}>
+                              <Mail size={14} />
                             </button>
                           )}
                           <button className="action-icon-btn n8n" onClick={() => triggerN8nManual(task)} disabled={isSending}>
@@ -1253,6 +1533,12 @@ function App() {
                           <Target size={12} />
                           <span>AI:{Math.round(task.score)}</span>
                         </div>
+                        {task.emailNotification && (
+                          <div className="meta-item" title="Automated Email Active">
+                            <Mail size={12} color="var(--primary)" />
+                            <span style={{ color: 'var(--primary)' }}>Mail Active</span>
+                          </div>
+                        )}
                       </div>
 
                     </motion.div>
@@ -1341,14 +1627,14 @@ function App() {
                           <label className="dropdown-item">
                             <input
                               type="checkbox"
-                              checked={newTask.assignees.some(a => a.email === 'admin@aisync.com')}
+                              checked={newTask.assignees.some(a => a.email?.toLowerCase().trim() === 'admin@aisync.com')}
                               onChange={(e) => {
                                 const isChecked = e.target.checked;
                                 const currentAssignees = [...newTask.assignees];
                                 if (isChecked) {
                                   currentAssignees.push({ name: 'Manager (Self)', email: 'admin@aisync.com' });
                                 } else {
-                                  const index = currentAssignees.findIndex(a => a.email === 'admin@aisync.com');
+                                  const index = currentAssignees.findIndex(a => a.email?.toLowerCase().trim() === 'admin@aisync.com');
                                   if (index > -1) currentAssignees.splice(index, 1);
                                 }
                                 setNewTask({ ...newTask, assignees: currentAssignees });
@@ -1360,14 +1646,14 @@ function App() {
                             <label key={staff.id} className="dropdown-item">
                               <input
                                 type="checkbox"
-                                checked={newTask.assignees.some(a => a.email === staff.email)}
+                                checked={newTask.assignees.some(a => a.email?.toLowerCase().trim() === staff.email?.toLowerCase().trim())}
                                 onChange={(e) => {
                                   const isChecked = e.target.checked;
                                   const currentAssignees = [...newTask.assignees];
                                   if (isChecked) {
-                                    currentAssignees.push({ name: staff.name, email: staff.email });
+                                    currentAssignees.push({ name: staff.name, email: staff.email?.toLowerCase().trim() });
                                   } else {
-                                    const index = currentAssignees.findIndex(a => a.email === staff.email);
+                                    const index = currentAssignees.findIndex(a => a.email?.toLowerCase().trim() === staff.email?.toLowerCase().trim());
                                     if (index > -1) currentAssignees.splice(index, 1);
                                   }
                                   setNewTask({ ...newTask, assignees: currentAssignees });
@@ -1382,14 +1668,14 @@ function App() {
                     </div>
 
                     <div className="form-group">
-                      <label>WhatsApp Alert Number</label>
+                      <label>Target Alert Email Address</label>
                       <div className="input-with-icon">
-                        <Smartphone size={16} className="field-icon" />
+                        <Mail size={16} className="field-icon" />
                         <input
-                          type="tel"
-                          placeholder="+1..."
-                          value={newTask.phone}
-                          onChange={(e) => setNewTask({ ...newTask, phone: e.target.value })}
+                          type="email"
+                          placeholder="alert@company.com"
+                          value={newTask.alertEmail}
+                          onChange={(e) => setNewTask({ ...newTask, alertEmail: e.target.value })}
                           style={{ paddingLeft: '44px' }}
                         />
                       </div>
@@ -1406,6 +1692,7 @@ function App() {
                           type="datetime-local"
                           value={newTask.deadline}
                           onChange={(e) => setNewTask({ ...newTask, deadline: e.target.value })}
+                          min={format(new Date(), "yyyy-MM-dd'T'HH:mm")}
                           style={{ paddingLeft: '44px' }}
                           className={formErrors.deadline ? 'error' : ''}
                         />
@@ -1426,6 +1713,18 @@ function App() {
                         <option value="60">1 Hour Before</option>
                         <option value="0">At Deadline</option>
                       </select>
+                    </div>
+
+                    <div className="form-group">
+                      <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
+                        <input
+                          type="checkbox"
+                          checked={newTask.emailNotification}
+                          onChange={(e) => setNewTask({ ...newTask, emailNotification: e.target.checked })}
+                          style={{ width: '18px', height: '18px', accentColor: 'var(--primary)' }}
+                        />
+                        <span style={{ fontSize: '0.85rem' }}>Send Automated Email at Deadline</span>
+                      </label>
                     </div>
                   </div>
                 </div>
@@ -1472,6 +1771,186 @@ function App() {
           </motion.div>
         )}
       </AnimatePresence >
+
+      {/* Reporting Modal */}
+      <AnimatePresence>
+        {isReportingModalOpen && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="modal-overlay"
+            style={{ zIndex: 4000 }}
+          >
+            <motion.div
+              initial={{ y: 50, opacity: 0 }}
+              animate={{ y: 0, opacity: 1 }}
+              exit={{ y: 50, opacity: 0 }}
+              className="modal-content glass-panel"
+              style={{ maxWidth: '1000px', width: '95%', maxHeight: '90vh', overflowY: 'auto' }}
+            >
+              <div className="modal-header">
+                <div>
+                  <h2 className="text-gradient" style={{ fontSize: '2rem', display: 'flex', alignItems: 'center', gap: '12px' }}>
+                    <FileText size={32} color="var(--primary)" /> Executive Task Report
+                  </h2>
+                  <p style={{ color: 'var(--text-muted)' }}>Detailed performance metrics and task distribution</p>
+                </div>
+                <div style={{ display: 'flex', gap: '12px' }}>
+                  <button
+                    className="btn-secondary"
+                    onClick={() => window.print()}
+                    style={{ fontSize: '0.8rem', padding: '8px 16px' }}
+                  >
+                    Print Report
+                  </button>
+                  <button
+                    className="btn-primary"
+                    onClick={exportToExcel}
+                    style={{ fontSize: '0.8rem', padding: '8px 16px', background: 'var(--success)', boxShadow: 'none' }}
+                  >
+                    Export to Excel
+                  </button>
+                  <button className="modal-close-btn" onClick={() => setIsReportingModalOpen(false)}>
+                    <X size={24} />
+                  </button>
+                </div>
+              </div>
+
+              <div className="reporting-dashboard" style={{ marginTop: '32px', display: 'flex', flexDirection: 'column', gap: '32px' }}>
+                {/* Summary Grid */}
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '20px' }}>
+                  <div className="glass-panel" style={{ padding: '20px', textAlign: 'center' }}>
+                    <div style={{ fontSize: '2.5rem', fontWeight: '800', color: 'var(--primary)' }}>{tasks.length}</div>
+                    <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '1px' }}>Global Tasks</div>
+                  </div>
+                  <div className="glass-panel" style={{ padding: '20px', textAlign: 'center' }}>
+                    <div style={{ fontSize: '2.5rem', fontWeight: '800', color: 'var(--success)' }}>{tasks.filter(t => t.completed).length}</div>
+                    <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '1px' }}>Completed</div>
+                  </div>
+                  <div className="glass-panel" style={{ padding: '20px', textAlign: 'center' }}>
+                    <div style={{ fontSize: '2.5rem', fontWeight: '800', color: 'var(--warning)' }}>{tasks.filter(t => !t.completed).length}</div>
+                    <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '1px' }}>In Progress</div>
+                  </div>
+                  <div className="glass-panel" style={{ padding: '20px', textAlign: 'center' }}>
+                    <div style={{ fontSize: '2.5rem', fontWeight: '800', color: 'var(--danger)' }}>{tasks.filter(t => !t.completed && t.deadline && isPast(new Date(t.deadline))).length}</div>
+                    <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '1px' }}>Overdue</div>
+                  </div>
+                </div>
+
+                {/* Detailed Table */}
+                <div className="glass-panel" style={{ overflow: 'hidden' }}>
+                  <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left' }}>
+                    <thead style={{ background: 'rgba(255,255,255,0.05)' }}>
+                      <tr>
+                        <th style={{ padding: '16px', fontSize: '0.8rem', color: 'var(--text-muted)' }}>OPERATIVE</th>
+                        <th style={{ padding: '16px', fontSize: '0.8rem', color: 'var(--text-muted)' }}>TASKS</th>
+                        <th style={{ padding: '16px', fontSize: '0.8rem', color: 'var(--text-muted)' }}>COMPLETED</th>
+                        <th style={{ padding: '16px', fontSize: '0.8rem', color: 'var(--text-muted)' }}>EFFICIENCY</th>
+                        <th style={{ padding: '16px', fontSize: '0.8rem', color: 'var(--text-muted)' }}>AVG AI SCORE</th>
+                        <th style={{ padding: '16px', fontSize: '0.8rem', color: 'var(--text-muted)' }}>STATUS</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {reportingData.map(staff => {
+                        const efficiency = staff.total > 0 ? Math.round((staff.completed / staff.total) * 100) : 0;
+                        return (
+                          <tr key={staff.id} style={{ borderTop: '1px solid rgba(255,255,255,0.05)' }}>
+                            <td style={{ padding: '16px' }}>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                                <div className="avatar-sm">{staff.name[0]}</div>
+                                <div>
+                                  <div style={{ fontWeight: '700', fontSize: '0.9rem' }}>{staff.name}</div>
+                                  <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>{staff.email}</div>
+                                </div>
+                              </div>
+                            </td>
+                            <td style={{ padding: '16px', fontWeight: '800' }}>{staff.total}</td>
+                            <td style={{ padding: '16px', color: 'var(--success)' }}>{staff.completed}</td>
+                            <td style={{ padding: '16px' }}>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                <div style={{ flex: 1, height: '6px', background: 'rgba(255,255,255,0.1)', borderRadius: '3px', overflow: 'hidden', minWidth: '60px' }}>
+                                  <div style={{ height: '100%', width: `${efficiency}%`, background: efficiency > 70 ? 'var(--success)' : efficiency > 30 ? 'var(--warning)' : 'var(--danger)' }}></div>
+                                </div>
+                                <span style={{ fontSize: '0.75rem' }}>{efficiency}%</span>
+                              </div>
+                            </td>
+                            <td style={{ padding: '16px' }}>
+                              <span style={{ color: staff.avgScore > 100 ? 'var(--danger)' : staff.avgScore > 60 ? 'var(--accent)' : 'var(--primary)' }}>
+                                {staff.avgScore}
+                              </span>
+                            </td>
+                            <td style={{ padding: '16px' }}>
+                              {staff.overdue > 0 ? (
+                                <span style={{ color: 'var(--danger)', fontSize: '0.75rem', fontWeight: '800', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                                  <AlertCircle size={14} /> {staff.overdue} OVERDUE
+                                </span>
+                              ) : staff.total > 0 && staff.pending === 0 ? (
+                                <span style={{ color: 'var(--success)', fontSize: '0.75rem', fontWeight: '800' }}>All Clear</span>
+                              ) : (
+                                <span style={{ color: 'var(--text-muted)', fontSize: '0.75rem' }}>Active</span>
+                              )}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+
+                {/* Detailed Breakdown Section */}
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(450px, 1fr))', gap: '32px' }}>
+                  {reportingData.filter(s => s.total > 0).map(staff => (
+                    <div key={staff.id} className="glass-panel" style={{ padding: '24px' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+                        <h4 style={{ fontSize: '1.2rem', fontWeight: '800' }}>{staff.name}'s Objectives</h4>
+                        <span style={{ fontSize: '0.75rem', background: 'rgba(255,255,255,0.05)', padding: '4px 12px', borderRadius: '12px' }}>
+                          {staff.pending} Remaining
+                        </span>
+                      </div>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                        {tasks.filter(t => {
+                          const userEmail = staff.email?.toLowerCase().trim();
+                          const isDirectlyAssigned = t.email?.toLowerCase().trim() === userEmail;
+                          const isMultiAssigned = Array.isArray(t.assignees) && t.assignees.some(a => {
+                            const emailToMatch = typeof a === 'string' ? a : a?.email;
+                            return emailToMatch?.toLowerCase().trim() === userEmail;
+                          });
+                          return isDirectlyAssigned || isMultiAssigned;
+                        }).map(task => (
+                          <div key={task.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px', background: 'rgba(0,0,0,0.2)', borderRadius: '12px', border: '1px solid rgba(255,255,255,0.03)' }}>
+                            <div style={{ flex: 1, minWidth: 0 }}>
+                              <div style={{ fontSize: '0.85rem', fontWeight: '700', textDecoration: task.completed ? 'line-through' : 'none', color: task.completed ? 'var(--text-muted)' : '#fff', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                                {task.title}
+                              </div>
+                              <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginTop: '2px' }}>
+                                Due: {task.deadline ? format(new Date(task.deadline), 'MMM d, HH:mm') : 'None'}
+                              </div>
+                            </div>
+                            <div style={{ marginLeft: '16px' }}>
+                              {task.completed ? (
+                                <div className="perf-pill early" style={{ fontSize: '0.65rem' }}>COMPLETED</div>
+                              ) : task.deadline && isPast(new Date(task.deadline)) ? (
+                                <div className="perf-pill overdue" style={{ fontSize: '0.65rem', background: 'var(--danger)', color: '#fff' }}>OVERDUE</div>
+                              ) : (
+                                <div className="perf-pill pending" style={{ fontSize: '0.65rem', background: 'var(--primary)', color: '#fff' }}>ACTIVE</div>
+                              )}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div style={{ marginTop: '48px', padding: '24px', borderTop: '1px solid rgba(255,255,255,0.05)', textAlign: 'center', fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+                Report Generated: {format(new Date(), 'MMMM d, yyyy HH:mm:ss')} • AIsync Strategic Intelligence System
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* Staff Details Popup for Manager */}
       <AnimatePresence>
@@ -1604,7 +2083,7 @@ function App() {
                     </div>
                     <div className="form-group">
                       <label>Email</label>
-                      <input type="email" value={newStaff.email} onChange={e => setNewStaff({ ...newStaff, email: e.target.value })} placeholder="john@example.com" required />
+                      <input type="email" value={newStaff.email} onChange={e => setNewStaff({ ...newStaff, email: e.target.value.toLowerCase().trim() })} placeholder="john@example.com" required />
                     </div>
                     <div className="form-group">
                       <label>Password</label>
@@ -1744,6 +2223,7 @@ function App() {
                     type="datetime-local"
                     value={extensionForm.newDeadline}
                     onChange={e => setExtensionForm({ ...extensionForm, newDeadline: e.target.value })}
+                    min={format(new Date(), "yyyy-MM-dd'T'HH:mm")}
                   />
                 </div>
 
@@ -1826,6 +2306,252 @@ function App() {
           </motion.div>
         )}
       </AnimatePresence>
+
+      {/* Chat Messaging Modal */}
+      <AnimatePresence>
+        {isChatOpen && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="modal-overlay"
+            style={{ zIndex: 4000 }}
+          >
+            <motion.div
+              initial={{ scale: 0.9, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.9, opacity: 0 }}
+              className="modal-content glass-panel chat-modal-content"
+              style={{ maxWidth: '900px', width: '95%' }}
+            >
+              {/* Chat Sidebar */}
+              <div className="chat-sidebar">
+                <div className="chat-sidebar-header">
+                  CHANNELS
+                </div>
+                <div className="chat-user-list">
+                  {/* Group Broadcast Channel */}
+                  <div
+                    className={`chat-user-item ${activeChatUser?.id === 'broadcast' ? 'active' : ''}`}
+                    onClick={() => {
+                      setActiveChatUser({ id: 'broadcast', name: 'Team Broadcast', role: 'All Personnel' });
+                      markMessagesAsRead('broadcast');
+                    }}
+                    style={{ borderLeft: '4px solid var(--accent)', background: 'rgba(6, 182, 212, 0.05)' }}
+                  >
+                    <div className="avatar" style={{ width: '32px', height: '32px', fontSize: '0.8rem', background: 'var(--accent)' }}>
+                      <Users size={16} />
+                    </div>
+                    <div className="chat-user-info">
+                      <div className="chat-user-name">Team Group</div>
+                      <div className="chat-user-role">Broadcast</div>
+                    </div>
+                    {messages.some(m => m.receiverId === 'broadcast' && !(m.readBy || []).includes(currentUser.id)) && (
+                      <div className="chat-unread-badge" style={{ background: 'var(--accent)' }}></div>
+                    )}
+                  </div>
+
+                  <div style={{ padding: '8px 12px', fontSize: '0.65rem', color: 'var(--text-muted)', fontWeight: '800', marginTop: '8px' }}>DIRECT MESSAGES</div>
+
+                  {/* Always show Manager to staff if they aren't the manager themselves */}
+                  {currentUser.role !== 'Manager' && (
+                    <div
+                      className={`chat-user-item ${activeChatUser?.id === MANAGER_CREDS.id ? 'active' : ''}`}
+                      onClick={() => {
+                        setActiveChatUser(MANAGER_CREDS);
+                        markMessagesAsRead(MANAGER_CREDS.id);
+                      }}
+                    >
+                      <div className="avatar" style={{ width: '32px', height: '32px', fontSize: '0.8rem', background: 'var(--primary)' }}>M</div>
+                      <div className="chat-user-info">
+                        <div className="chat-user-name">Manager</div>
+                        <div className="chat-user-role">System Admin</div>
+                      </div>
+                      {messages.some(m => m.senderId === MANAGER_CREDS.id && m.receiverId === currentUser.id && !m.read) && (
+                        <div className="chat-unread-badge"></div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Show all staff members except current user */}
+                  {staffMembers.filter(s => s.id !== currentUser.id).map(staff => (
+                    <div
+                      key={staff.id}
+                      className={`chat-user-item ${activeChatUser?.id === staff.id ? 'active' : ''}`}
+                      onClick={() => {
+                        setActiveChatUser(staff);
+                        markMessagesAsRead(staff.id);
+                      }}
+                    >
+                      <div className="avatar" style={{ width: '32px', height: '32px', fontSize: '0.8rem' }}>{staff.name[0]}</div>
+                      <div className="chat-user-info">
+                        <div className="chat-user-name">{staff.name}</div>
+                        <div className="chat-user-role">Staff</div>
+                      </div>
+                      {messages.some(m => m.senderId === staff.id && m.receiverId === currentUser.id && !m.read) && (
+                        <div className="chat-unread-badge"></div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Chat Main Area */}
+              <div className="chat-main">
+                <div className="chat-main-header">
+                  {activeChatUser ? (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                      <div className="avatar" style={{ width: '36px', height: '36px', fontSize: '0.9rem', background: activeChatUser.id === 'broadcast' ? 'var(--accent)' : 'var(--surface)' }}>
+                        {activeChatUser.id === 'broadcast' ? <Users size={18} /> : activeChatUser.name[0]}
+                      </div>
+                      <div>
+                        <div style={{ fontWeight: '800', fontSize: '1rem', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                          <span className="status-dot"></span>
+                          {activeChatUser.name}
+                        </div>
+                        <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', fontWeight: '600' }}>{activeChatUser.role} • Active Now</div>
+                      </div>
+                    </div>
+                  ) : (
+                    <div style={{ fontWeight: '700' }}>Direct Message</div>
+                  )}
+                  <button className="modal-close-btn glass-panel" onClick={() => setIsChatOpen(false)} style={{ padding: '8px', borderRadius: '12px' }}>
+                    <X size={20} />
+                  </button>
+                </div>
+
+                <div className="chat-messages-container">
+                  <div style={{ flex: 1 }}></div> {/* Pushes messages to bottom */}
+                  {activeChatUser ? (
+                    <>
+                      {messages
+                        .filter(m =>
+                          (activeChatUser.id === 'broadcast' && m.receiverId === 'broadcast') ||
+                          (activeChatUser.id !== 'broadcast' && (
+                            (m.senderId === currentUser.id && m.receiverId === activeChatUser.id) ||
+                            (m.senderId === activeChatUser.id && m.receiverId === currentUser.id)
+                          ))
+                        )
+                        .map((msg, idx, arr) => (
+                          <motion.div
+                            key={msg.id}
+                            initial={{ opacity: 0, y: 10, scale: 0.95 }}
+                            animate={{ opacity: 1, y: 0, scale: 1 }}
+                            className={`message-bubble-wrapper ${msg.senderId === currentUser.id ? 'sent' : 'received'}`}
+                            style={{ display: 'flex', flexDirection: 'column', alignItems: msg.senderId === currentUser.id ? 'flex-end' : 'flex-start', gap: '4px' }}
+                            ref={el => {
+                              if (idx === arr.length - 1 && el) {
+                                el.scrollIntoView({ behavior: 'smooth' });
+                              }
+                            }}
+                          >
+                            <div style={{ display: 'flex', alignItems: 'flex-end', gap: '8px', maxWidth: '100%' }}>
+                              {msg.senderId !== currentUser.id && (
+                                <div className="avatar" style={{ width: '28px', height: '28px', fontSize: '0.7rem', flexShrink: 0, marginBottom: '4px' }}>
+                                  {msg.senderName[0]}
+                                </div>
+                              )}
+                              <div className={`message-bubble ${msg.senderId === currentUser.id ? 'sent' : 'received'}`}>
+                                {activeChatUser.id === 'broadcast' && msg.senderId !== currentUser.id && (
+                                  <div style={{ fontSize: '0.7rem', fontWeight: '800', marginBottom: '6px', color: 'var(--accent)', opacity: 0.9 }}>{msg.senderName}</div>
+                                )}
+                                <div className="message-content">
+                                  {typeof msg.content === 'string' ? (
+                                    <div className="text-message">{msg.content}</div>
+                                  ) : (
+                                    <div className="rich-message flex flex-col gap-3">
+                                      {msg.content.text && <div className="text-message">{msg.content.text}</div>}
+                                      {msg.content.attachments && msg.content.attachments.map(att => (
+                                        <div key={att.id} className="attachment-bubble mt-1">
+                                          {att.type === 'audio' ? (
+                                            <div className="audio-player p-2 rounded-xl flex items-center gap-3 border border-white/5 min-w-[200px]">
+                                              <div className="w-8 h-8 rounded-full bg-emerald-500 flex items-center justify-center flex-shrink-0">
+                                                <Mic size={14} className="text-white" />
+                                              </div>
+                                              <audio controls src={att.url} className="h-8 flex-1" />
+                                            </div>
+                                          ) : att.fileType?.startsWith('image/') ? (
+                                            <img src={att.url} alt={att.name} className="max-w-full rounded-xl border border-white/10 shadow-lg max-h-[300px] object-cover" />
+                                          ) : (
+                                            <div className="file-attachment p-3 rounded-xl flex items-center gap-3 border border-white/5 hover:bg-zinc-900 transition-colors cursor-pointer group">
+                                              <div className="w-10 h-10 rounded-lg bg-emerald-500/10 flex items-center justify-center flex-shrink-0 group-hover:bg-emerald-500/20">
+                                                <FileText size={20} className="text-emerald-400" />
+                                              </div>
+                                              <div className="flex-1 min-w-0">
+                                                <div className="text-[13px] font-bold text-zinc-100 truncate">{att.name}</div>
+                                                <div className="text-[11px] text-zinc-500">{att.size}</div>
+                                              </div>
+                                              <button
+                                                onClick={() => window.open(att.url, '_blank')}
+                                                className="text-[11px] text-emerald-400 font-bold hover:underline"
+                                              >
+                                                View
+                                              </button>
+                                            </div>
+                                          )}
+                                        </div>
+                                      ))}
+                                    </div>
+                                  )}
+                                </div>
+                                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: '4px', marginTop: '4px' }}>
+                                  <span className="message-time">{format(new Date(msg.timestamp), 'HH:mm')}</span>
+                                  {msg.senderId === currentUser.id && (
+                                    <CheckCircle2 size={10} color="rgba(255,255,255,0.6)" />
+                                  )}
+                                </div>
+                              </div>
+                            </div>
+                          </motion.div>
+                        ))
+                      }
+                      {messages.filter(m =>
+                        (activeChatUser.id === 'broadcast' && m.receiverId === 'broadcast') ||
+                        (activeChatUser.id !== 'broadcast' && (
+                          (m.senderId === currentUser.id && m.receiverId === activeChatUser.id) ||
+                          (m.senderId === activeChatUser.id && m.receiverId === currentUser.id)
+                        ))
+                      ).length === 0 && (
+                          <div className="chat-empty-state">
+                            <MessageCircle size={48} />
+                            <p>No messages yet. Start the conversation!</p>
+                          </div>
+                        )}
+                    </>
+                  ) : (
+                    <div className="chat-empty-state">
+                      <Brain size={48} />
+                      <p>Select a contact to begin strategic briefing.</p>
+                    </div>
+                  )}
+                </div>
+
+                {activeChatUser && (
+                  <div className="chat-input-area-slack">
+                    <SlackMessagingInput
+                      channelName={activeChatUser.name}
+                      onSend={(content) => {
+                        const newMessage = {
+                          id: Date.now(),
+                          senderId: currentUser.id,
+                          senderName: currentUser.name,
+                          receiverId: activeChatUser.id,
+                          content: content,
+                          timestamp: new Date().toISOString(),
+                          read: false
+                        };
+                        setMessages(prev => [...prev, newMessage]);
+                        // Notification for group members also handled here if needed
+                      }}
+                    />
+                  </div>
+                )}
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
 
     </div >
 

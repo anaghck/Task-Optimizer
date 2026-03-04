@@ -1,3 +1,5 @@
+@import "tailwindcss";
+
 :root {
   --primary: #6366f1;
   --primary-glow: rgba(99, 102, 241, 0.4);
@@ -126,4 +128,63 @@ h3 {
 
 .fade-in {
   animation: fadeIn 0.5s forwards;
+}
+
+@media print {
+
+  .sidebar,
+  .header,
+  .btn-primary,
+  .modal-close-btn,
+  .action-icon-btn,
+  .btn-task-action,
+  .logout-btn,
+  .advanced-filters,
+  .search-bar {
+    display: none !important;
+  }
+
+  body {
+    background: white !important;
+    color: black !important;
+  }
+
+  .modal-overlay {
+    position: static !important;
+    background: white !important;
+    color: black !important;
+    padding: 0 !important;
+  }
+
+  .modal-content {
+    background: white !important;
+    color: black !important;
+    box-shadow: none !important;
+    border: none !important;
+    max-width: 100% !important;
+    width: 100% !important;
+    max-height: none !important;
+    overflow: visible !important;
+    padding: 0 !important;
+  }
+
+  .glass-panel {
+    background: transparent !important;
+    border: 1px solid #eee !important;
+    color: black !important;
+    border-radius: 0 !important;
+  }
+
+  .text-gradient {
+    -webkit-text-fill-color: black !important;
+    background: none !important;
+    color: black !important;
+    background-clip: unset !important;
+  }
+
+  .stat-card-premium,
+  .stats-card,
+  .api-settings-card {
+    border: 1px solid #eee !important;
+  }
 }
